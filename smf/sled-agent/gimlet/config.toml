@@ -25,6 +25,9 @@ data_link = "cxgbe0"
 # guest memory is pulled from.
 vmm_reservoir_percentage = 0
 
+# Swap device size for the system.
+swap_device_size_gb = 256
+
 [log]
 level = "info"
 mode = "file"

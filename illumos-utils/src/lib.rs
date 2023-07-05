@@ -14,6 +14,7 @@ pub mod fstyp;
 pub mod link;
 pub mod opte;
 pub mod running_zone;
+pub mod swapctl;
 pub mod svc;
 pub mod vmm_reservoir;
 pub mod zfs;

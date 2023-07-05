@@ -209,6 +209,37 @@ pub struct SledAgent {
     inner: Arc<SledAgentInner>,
 }
 
+
+// Plan: print out the name of the boot disk on a real system
+fn setup_swap_device(log: &Logger, size_gb: u8) -> Result<(), Error> {
+    assert!(size_gb > 0);
+
+    // Check if we already have a swap device on the system, and if so, whether it looks like what
+    // we expect.
+    //let devs = illumos_utils::swapctl::list_swap_devices()?;
+
+    // For now, panic if there is more than one device.
+    // TODO: proper error handling
+    //assert!(devs.len() <= 1);
+
+    //if devs.len() > 0 {
+        // TODO: log
+        //info!(log, "Swap device already exists: {:?}", devs[0]);
+        //return Ok(())
+    //}
+
+    // If a zvol already exists, destroy it
+    // TODO
+
+    // Create the zvol
+    // TODO
+    
+    // Add the zvol as a swap device
+    //illumos_utils::swapctl::add_swap_device(path, offset, length)?;
+
+    Ok(())
+}
+
 impl SledAgent {
     /// Initializes a new [`SledAgent`] object.
     pub async fn new(
@@ -229,6 +260,22 @@ impl SledAgent {
             "sled_id" => request.id.to_string(),
         ));
         info!(&log, "SledAgent::new(..) starting");
+
+        // TODO: comment about why it is here
+        match config.swap_device_size_gb {
+            Some(sz) if sz > 0 => {
+                info!(log, "Requested swap device of size {} GiB", sz);
+                setup_swap_device(&parent_log, sz)?;
+            },
+            Some(sz) if sz == 0 => {
+                panic!("Invalid requested swap device size of 0 GiB");
+            },
+            None | Some(_) => {
+                info!(log, "Not setting up swap device: not configured");
+            }
+        }
+        // print the boot disk for funsies
+        info!(log, "boot disk: {:?}", storage.resources().boot_disk().await);
 
         let etherstub = Dladm::ensure_etherstub(
             illumos_utils::dladm::UNDERLAY_ETHERSTUB_NAME,
@@ -609,7 +656,7 @@ impl SledAgent {
     }
 
     /// Returns whether or not the sled believes itself to be a scrimlet
-    pub async fn get_role(&self) -> SledRole {
+    pub fn get_role(&self) -> SledRole {
         if self.inner.hardware.is_scrimlet() {
             SledRole::Scrimlet
         } else {
