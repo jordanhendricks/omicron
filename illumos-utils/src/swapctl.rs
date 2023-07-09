@@ -7,8 +7,7 @@
 use omicron_common::api::external::ByteCount;
 
 #[derive(Debug)]
-pub struct SwapDevice {
-}
+pub struct SwapDevice {}
 
 pub fn list_swap_devices() -> std::io::Result<Vec<SwapDevice>> {
     // TODO
@@ -17,7 +16,11 @@ pub fn list_swap_devices() -> std::io::Result<Vec<SwapDevice>> {
 }
 
 // TODO: could make this a swap device object as an arg
-pub fn add_swap_device(path: String, offset: ByteCount, length: ByteCount) -> std::io::Result<()> {
+pub fn add_swap_device(
+    path: String,
+    offset: ByteCount,
+    length: ByteCount,
+) -> std::io::Result<()> {
     // TODO
     Ok(())
 }
