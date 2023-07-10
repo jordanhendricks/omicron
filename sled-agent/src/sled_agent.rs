@@ -49,6 +49,9 @@ pub enum Error {
     #[error("Configuration error: {0}")]
     Config(#[from] crate::config::ConfigError),
 
+    #[error("Error setting up swap device: {0}")]
+    SwapDevice(#[from] crate::swap_device::SwapDeviceError),
+
     #[error("Failed to acquire etherstub: {0}")]
     Etherstub(illumos_utils::ExecutionError),
 
@@ -209,86 +212,6 @@ pub struct SledAgent {
     inner: Arc<SledAgentInner>,
 }
 
-// Ensure the system has a swap device setup, creating the underlying block
-// device if necessary.
-//
-// The swap device is backed by an encrypted zvol that lives on the M.2 disk
-// that we booted from. Because we booted from the disk, we know for certain the
-// system can access it. We encrypt the zvol because arbitrary system memory could
-// exist in the device, including sensitive data. The zvol is encrypted with an
-// ephemeral key; we throw it away immediately after creation and create a new
-// zvol if we find one on startup (that isn't backing a current swap device). An
-// ephemeral key is prudent because the kernel has the key once the device is
-// created, and there is no need for anyone else to ever decrypt swap.
-//
-// To achieve idempotency in the case of crash and restart, we do the following:
-//   1. On startup, check if there is a swap device. If one exists, we are done.
-//      Swap devices do not persist across reboot by default, so if a device
-//      already exists, this isn't our first time starting after boot. The
-//      device may be in use. Changes to how the swap device is setup, should we
-//      decide to do that, will be across reboots, as this is how sled-agent is
-//      upgraded, so we will get a shot to make changes across upgrade.
-//   2. If there is no swap device, check for a zvol at the known path on the
-//      M.2 that we booted from. If we find such a zvol, delete it.
-//   3. Create an encrypted zvol with a randomly generated key that is
-//      immediately discarded.
-//   4. Add the zvol as a swap device with swapctl(2).
-// 
-// Note that this introduces a sled-agent upgrade consideration if we ever
-// choose to change how we set up the device. A configured swap device does not
-// persist across reboot by default, but a zvol does. Thus, if the well known
-// path for the zvol ever changes, we will need to at least support a window
-// where we check for both the previously well-known path and the new
-// configuration.
-async fn ensure_swap_device(log: &Logger, storage: &StorageManager, size_gb: u8) -> Result<(), Error> {
-    assert!(size_gb > 0);
-
-    // TODO error translation of io error
-    //let devs = illumos_utils::swapctl::list_swap_devices()?;
-    //if devs.len() > 0 {
-        //if devs.len() > 1 {
-            // This should really never happen unless we've made a mistake, but it's
-            // probably fine to have more than one swap device. Thus, don't panic
-            // over it, but do log a warning so there is evidence that we found
-            // extra devices.
-            //warn!(log, "Found multiple existing swap devices on startup: {:?}", devs);
-        //} else {
-            //info!(log, "Swap device already exists: {:?}", devs);
-        //}
-
-        //return Ok(())
-    //}
-
-    //let boot_disk = storage.resources().boot_disk().await?;
-    // TODO
-    let zvol_path = "";
-
-
-    // Check if we already have a swap device on the system, and if so, whether it looks like what
-    // we expect.
-
-    // For now, panic if there is more than one device.
-    // TODO: proper error handling
-    //assert!(devs.len() <= 1);
-
-    //if devs.len() > 0 {
-    // TODO: log
-    //info!(log, "Swap device already exists: {:?}", devs[0]);
-    //return Ok(())
-    //}
-
-    // If a zvol already exists, destroy it
-    // TODO
-
-    // Create the zvol
-    // TODO
-
-    // Add the zvol as a swap device
-    //illumos_utils::swapctl::add_swap_device(path, offset, length)?;
-
-    Ok(())
-}
-
 impl SledAgent {
     /// Initializes a new [`SledAgent`] object.
     pub async fn new(
@@ -310,11 +233,16 @@ impl SledAgent {
         ));
         info!(&log, "SledAgent::new(..) starting");
 
-        // TODO: comment about why it is here
+        // Configure a swap device of the configured size before other system setup.
         match config.swap_device_size_gb {
             Some(sz) if sz > 0 => {
                 info!(log, "Requested swap device of size {} GiB", sz);
-                ensure_swap_device(&parent_log, &storage, sz).await?;
+                crate::swap_device::ensure_swap_device(
+                    &parent_log,
+                    &storage,
+                    sz,
+                )
+                .await?;
             }
             Some(sz) if sz == 0 => {
                 panic!("Invalid requested swap device size of 0 GiB");
