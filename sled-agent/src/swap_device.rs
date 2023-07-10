@@ -4,6 +4,11 @@
 
 use omicron_common::api::external::ByteCount;
 
+// TODO:
+// - comment about why swap device is necessary at all
+// - create and unlink key
+// - pull in the rest of swapctl code
+
 #[derive(Debug, thiserror::Error)]
 pub enum SwapDeviceError {
     // TODO: error struct type?
@@ -194,6 +199,7 @@ mod swapctl {
     #[derive(Debug)]
     pub(crate) struct SwapDevice {}
 
+    /// List all swap devices on the system.
     pub(crate) fn list_swap_devices() -> std::io::Result<Vec<SwapDevice>> {
         // TODO
         let devs = vec![];
@@ -201,6 +207,7 @@ mod swapctl {
     }
 
     // TODO: could make this a swap device object as an arg
+    /// Add a swap device at the given path
     pub fn add_swap_device(
         path: String,
         offset: ByteCount,
@@ -208,5 +215,136 @@ mod swapctl {
     ) -> std::io::Result<()> {
         // TODO
         Ok(())
+    }
+
+    // swapctl(2)
+    extern "C" {
+        fn swapctl(cmd: i32, arg: *mut libc::c_void) -> i32;
+    }
+
+    // swapctl(2) commands
+    const SC_ADD: i32 = 0x1;
+    const SC_LIST: i32 = 0x2;
+    const SC_REMOVE: i32 = 0x3;
+    const SC_GETNSWP: i32 = 0x4;
+
+    // SC_ADD / SC_REMOVE arg
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone)]
+    pub struct swapres {
+        sr_name: *const libc::c_char,
+        sr_start: libc::off_t,
+        sr_length: libc::off_t,
+    }
+
+    // SC_LIST arg: swaptbl with an embedded array of swt_n swapents
+    #[repr(C)]
+    #[derive(Debug, Clone)]
+    pub struct swaptbl {
+        swt_n: i32,
+        swt_ent: [swapent; N_SWAPENTS],
+    }
+    #[repr(C)]
+    #[derive(Debug, Copy, Clone)]
+    pub struct swapent {
+        ste_path: *const libc::c_char,
+        ste_start: libc::off_t,
+        ste_length: libc::off_t,
+        ste_pages: libc::c_long,
+        ste_free: libc::c_long,
+        ste_flags: libc::c_long,
+    }
+    impl Default for swapent {
+        fn default() -> Self {
+            Self {
+                ste_path: std::ptr::null(),
+                ste_start: 0,
+                ste_length: 0,
+                ste_pages: 0,
+                ste_free: 0,
+                ste_flags: 0,
+            }
+        }
+    }
+
+    // The argument for SC_LIST (swaptbl) requires an embedded array in the struct,
+    // with swt_n entries, each of which requires a pointer to store the path to the
+    // device.
+    //
+    // Ideally, we would want to query the number of swap devices on the system via
+    // SC_GETNSWP, allocate enough memory for the number of devices, then list the
+    // swap devices. Creating a generically large array embedded in a struct that
+    // can be passed to C is a bit of a challenge in safe Rust. So instead, we just
+    // pick a reasonable max number of devices to list.
+    //
+    // We pick a max of 3 devices, somewhat arbitrarily, but log the number of
+    // swap devices we see regardless. We only ever expect to see 0 or 1 swap
+    // device(s); if there are more, that is a bug. In this case we log a warning,
+    // and eventually, we should send an ereport.
+    const N_SWAPENTS: usize = 3;
+
+    unsafe fn swapctl_cmd<T>(
+        cmd: i32,
+        data: Option<*mut T>,
+    ) -> std::io::Result<u32> {
+        assert!(cmd >= 0 && cmd <= SC_GETNSWP, "invalid swapctl cmd: {cmd}");
+
+        let ptr = match data {
+            Some(v) => v as *mut libc::c_void,
+            None => std::ptr::null_mut(),
+        };
+
+        let res = swapctl(cmd, ptr);
+        if res == -1 {
+            // TODO: log message
+            // TODO: custom error
+            return Err(std::io::Error::last_os_error());
+        }
+
+        Ok(res as u32)
+    }
+
+    fn swapctl_get_num_devices() -> std::io::Result<u32> {
+        unsafe { swapctl_cmd::<i32>(SC_GETNSWP, None) }
+    }
+
+    fn swapctl_list_devices(ndev: u32) -> std::io::Result<Vec<SwapDevice>> {
+        assert!(ndev > 0);
+
+        let devs: Vec<SwapDevice> = Vec::with_capacity(ndev as usize);
+
+        // statically allocate the array of swapents for SC_LIST
+        //
+        // see comment on `N_SWAPENTS` for details
+        const MAXPATHLEN: usize = libc::PATH_MAX as usize;
+        assert_eq!(N_SWAPENTS, 3);
+        let p1 = [0i8; MAXPATHLEN];
+        let p2 = [0i8; MAXPATHLEN];
+        let p3 = [0i8; MAXPATHLEN];
+
+        let entries: [swapent; N_SWAPENTS] = [
+            swapent {
+                ste_path: &p1 as *const libc::c_char,
+                ..Default::default()
+            },
+            swapent {
+                ste_path: &p2 as *const libc::c_char,
+                ..Default::default()
+            },
+            swapent {
+                ste_path: &p3 as *const libc::c_char,
+                ..Default::default()
+            },
+        ];
+
+        let mut list_req =
+            swaptbl { swt_n: N_SWAPENTS as i32, swt_ent: entries };
+
+        let n_devices = unsafe { swapctl_cmd(SC_LIST, Some(&mut list_req))? };
+
+        // extract out the device information
+        // TODO
+
+        Ok(devs)
     }
 }

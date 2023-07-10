@@ -4864,6 +4864,7 @@ dependencies = [
  "ipnetwork",
  "itertools",
  "key-manager",
+ "libc",
  "macaddr",
  "mockall",
  "nexus-client 0.1.0",
