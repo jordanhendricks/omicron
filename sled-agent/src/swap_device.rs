@@ -2,13 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-// TODO:
-// - comment about why swap device is necessary at all
-// - create and unlink key (kinda done, need random bytes)
-// - pull in the rest of swapctl code (kinda done, need to check against add impl of swapctl toy)
-// - flesh out errors
-// - create a singleton program that i can test all error cases with
-
 #[derive(Debug, thiserror::Error)]
 pub enum SwapDeviceError {
     // TODO: error struct type?
@@ -17,6 +10,17 @@ pub enum SwapDeviceError {
 
     #[error("Boot device not found")]
     NoBootDeviceFound,
+
+    #[error("Error listing swap devices: {0}")]
+    ListDevices(String),
+
+    #[error("Error adding swap device: {msg} (path=\"{path}\", start={start}, length={length})")]
+    AddDevice {
+        msg: String,
+        path: String,
+        start: u64,
+        length: u64,
+    },
 }
 
 /// Ensure the system has a swap device, creating the underlying block
@@ -58,8 +62,7 @@ pub(crate) async fn ensure_swap_device(
     assert!(size_gb > 0);
 
     // TODO error translation of io error
-    let devs = swapctl::list_swap_devices()
-        .map_err(|e| SwapDeviceError::Io(e.to_string()))?;
+    let devs = swapctl::list_swap_devices()?;
     if devs.len() > 0 {
         if devs.len() > 1 {
             // This should really never happen unless we've made a mistake, but it's
@@ -92,9 +95,8 @@ pub(crate) async fn ensure_swap_device(
     create_encrypted_swap_zvol(log, &swap_zvol_path, size_gb).await?;
 
     // Add the zvol as a swap device
-    // TODO: right parameters here
-    swapctl::add_swap_device(swap_zvol_path, 0, 0)
-        .map_err(|e| SwapDeviceError::Io(e.to_string()))?;
+    // TODO: right parameters here: size
+    swapctl::add_swap_device(swap_zvol_path, 0, 0)?;
 
     Ok(())
 }
@@ -140,8 +142,8 @@ fn zvol_destroy(name: &str) -> Result<(), SwapDeviceError> {
         //return Err(SwapDeviceError::Io("zfs destroy failure".to_string()));
     }
 
+    // TODO: remove after testing
     if zvol_exists(name)? {
-        // TODO: error here
         panic!("zvol not cleaned up");
     }
 
@@ -202,8 +204,8 @@ async fn create_encrypted_swap_zvol(
 
     // Unlink the key.
 
+    // TODO: remove after testing
     if !zvol_exists(name)? {
-        // TODO: error here
         panic!("zvol not created successfully");
     }
 
@@ -212,6 +214,8 @@ async fn create_encrypted_swap_zvol(
 
 /// Wrapper functions around swapctl(2) operations
 mod swapctl {
+    use crate::swap_device::SwapDeviceError;
+
     #[derive(Debug)]
     pub(crate) struct SwapDevice {
         /// path to the resource
@@ -313,8 +317,6 @@ mod swapctl {
 
         let res = swapctl(cmd, ptr);
         if res == -1 {
-            // TODO: log message
-            // TODO: custom error
             return Err(std::io::Error::last_os_error());
         }
 
@@ -326,7 +328,7 @@ mod swapctl {
     }
 
     /// List swap devices on the system.
-    pub(crate) fn list_swap_devices() -> std::io::Result<Vec<SwapDevice>> {
+    pub(crate) fn list_swap_devices() -> Result<Vec<SwapDevice>, SwapDeviceError> {
         // Statically create the array of swapents for SC_LIST: see comment on
         // `N_SWAPENTS` for details.
         const MAXPATHLEN: usize = libc::PATH_MAX as usize;
@@ -352,7 +354,11 @@ mod swapctl {
 
         let mut list_req =
             swaptbl { swt_n: N_SWAPENTS as i32, swt_ent: entries };
-        let n_devices = unsafe { swapctl_cmd(SC_LIST, Some(&mut list_req))? };
+        let n_devices = unsafe {
+            swapctl_cmd(SC_LIST, Some(&mut list_req))
+                .map_err(|e| SwapDeviceError::ListDevices(e.to_string()))?
+        };
+        assert!(n_devices >= 0);
 
         let mut devices = Vec::with_capacity(n_devices as usize);
         for i in 0..n_devices as usize {
@@ -379,8 +385,14 @@ mod swapctl {
         path: String,
         start: u64,
         length: u64,
-    ) -> std::io::Result<()> {
-        let name = std::ffi::CString::new(path)?;
+    ) -> Result<(), SwapDeviceError> {
+        let path_cp = path.clone();
+        let name = std::ffi::CString::new(path).map_err(|e| SwapDeviceError::AddDevice {
+            msg: format!("could not convert path to CString: {}", e.to_string()),
+            path: path_cp.clone(),
+            start: start,
+            length: length,
+        })?;
 
         let mut add_req = swapres {
             sr_name: name.as_ptr(),
@@ -388,8 +400,13 @@ mod swapctl {
             sr_length: length as i64,
         };
 
-        let res = unsafe { swapctl_cmd(SC_ADD, Some(&mut add_req))? };
-        assert_eq!(res, 0); // non-zero result handled by swapctl_cmd
+        let res = unsafe { swapctl_cmd(SC_ADD, Some(&mut add_req)).map_err(|e| SwapDeviceError::AddDevice {
+            msg: e.to_string(),
+            path: path_cp,
+            start: start,
+            length: length,
+        })?};
+        assert_eq!(res, 0);
 
         Ok(())
     }
