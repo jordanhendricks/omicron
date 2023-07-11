@@ -2,12 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use omicron_common::api::external::ByteCount;
-
 // TODO:
 // - comment about why swap device is necessary at all
-// - create and unlink key
-// - pull in the rest of swapctl code
+// - create and unlink key (kinda done, need random bytes)
+// - pull in the rest of swapctl code (kinda done, need to check against add impl of swapctl toy)
+// - flesh out errors
+// - create a singleton program that i can test all error cases with
 
 #[derive(Debug, thiserror::Error)]
 pub enum SwapDeviceError {
@@ -19,25 +19,25 @@ pub enum SwapDeviceError {
     NoBootDeviceFound,
 }
 
-/// Ensure the system has a swap device setup, creating the underlying block
+/// Ensure the system has a swap device, creating the underlying block
 /// device if necessary.
 ///
-/// The swap device is backed by an encrypted zvol that lives on the M.2 disk
-/// that we booted from. Because we booted from the disk, we know for certain the
+/// The swap device is an encrypted zvol that lives on the M.2 disk
+/// that the system booted from. Because it booted from the disk, we know for certain the
 /// system can access it. We encrypt the zvol because arbitrary system memory could
 /// exist in swap, including sensitive data. The zvol is encrypted with an
 /// ephemeral key; we throw it away immediately after creation and create a new
 /// zvol if we find one on startup (that isn't backing a current swap device). An
 /// ephemeral key is prudent because the kernel has the key once the device is
-/// created, and there is no need for anyone else to ever decrypt swap.
+/// created, and there is no need for anything else to ever decrypt swap.
 ///
 /// To achieve idempotency in the case of crash and restart, we do the following:
 ///   1. On startup, check if there is a swap device. If one exists, we are done.
 ///      Swap devices do not persist across reboot by default, so if a device
 ///      already exists, this isn't our first time starting after boot. The
 ///      device may be in use. Changes to how the swap device is setup, should we
-///      decide to do that, will be across reboots, as this is how sled-agent is
-///      upgraded, so we will get a shot to make changes across upgrade.
+///      decide to do that, will be across reboots (as this is how sled-agent is
+///      upgraded), so we will get a shot to make changes across upgrade.
 ///   2. If there is no swap device, check for a zvol at the known path on the
 ///      M.2 that we booted from. If we find such a zvol, delete it.
 ///   3. Create an encrypted zvol with a randomly generated key that is
@@ -89,20 +89,17 @@ pub(crate) async fn ensure_swap_device(
         zvol_destroy(&swap_zvol_path)?;
     }
 
-    create_encrypted_swap_zvol(&swap_zvol_path, size_gb)?;
+    create_encrypted_swap_zvol(log, &swap_zvol_path, size_gb).await?;
 
     // Add the zvol as a swap device
     // TODO: right parameters here
-    swapctl::add_swap_device(
-        swap_zvol_path,
-        ByteCount::from_kibibytes_u32(0),
-        ByteCount::from_kibibytes_u32(0),
-    )
-    .map_err(|e| SwapDeviceError::Io(e.to_string()))?;
+    swapctl::add_swap_device(swap_zvol_path, 0, 0)
+        .map_err(|e| SwapDeviceError::Io(e.to_string()))?;
 
     Ok(())
 }
 
+// Check whether the given zvol exists.
 fn zvol_exists(name: &str) -> Result<bool, SwapDeviceError> {
     let output = std::process::Command::new(illumos_utils::zfs::ZFS)
         .args(&["list", "-Hpo", "name,type"])
@@ -132,6 +129,8 @@ fn zvol_exists(name: &str) -> Result<bool, SwapDeviceError> {
     Ok(found)
 }
 
+// Destroys a zvol at the given path, double checking that it's gone after
+// issuing the destroy command.
 fn zvol_destroy(name: &str) -> Result<(), SwapDeviceError> {
     let output = std::process::Command::new(illumos_utils::zfs::ZFS)
         .args(&["destroy", name])
@@ -149,10 +148,27 @@ fn zvol_destroy(name: &str) -> Result<(), SwapDeviceError> {
     Ok(())
 }
 
-fn create_encrypted_swap_zvol(
+// Creates an encrypted zvol at the input path with the given size.
+//
+// The keyfile is created in a location and tmpfs and unlinked after the zvol is
+// created.
+async fn create_encrypted_swap_zvol(
+    log: &slog::Logger,
     name: &str,
     size_gb: u8,
 ) -> Result<(), SwapDeviceError> {
+    // Create an ephemeral key.
+    // TODO: path, generate random bytes
+    let kp = illumos_utils::zfs::Keypath(camino::Utf8PathBuf::from(format!(
+        "{}/swap",
+        sled_hardware::disk::KEYPATH_ROOT
+    )));
+    let keypath = format!("{}", kp);
+    let key = [0; 32];
+    let keyfile = sled_hardware::KeyFile::create(kp, &key, log)
+        .await
+        .map_err(|e| SwapDeviceError::Io(e.to_string()))?;
+
     // Create the zvol
     let size_arg = format!("{}G", size_gb);
     let output = std::process::Command::new(illumos_utils::zfs::ZFS)
@@ -162,7 +178,7 @@ fn create_encrypted_swap_zvol(
             "-V",
             &size_arg,
             "-b",
-            // TODO: correct thing here
+            // TODO: correct thing here for pageconf
             "4096",
             "-o",
             "logbias=throughput",
@@ -175,8 +191,7 @@ fn create_encrypted_swap_zvol(
             "-o",
             "keyformat=raw",
             "-o",
-            // TODO: keypath
-            "TODO keypath",
+            &keypath,
             name,
         ])
         .output()
@@ -184,6 +199,8 @@ fn create_encrypted_swap_zvol(
     if !output.status.success() {
         //return Err(SwapDeviceError::Io("zfs create failure".to_string()));
     }
+
+    // Unlink the key.
 
     if !zvol_exists(name)? {
         // TODO: error here
@@ -193,28 +210,26 @@ fn create_encrypted_swap_zvol(
     Ok(())
 }
 
+/// Wrapper functions around swapctl(2) operations
 mod swapctl {
-    use omicron_common::api::external::ByteCount;
-
     #[derive(Debug)]
-    pub(crate) struct SwapDevice {}
-
-    /// List all swap devices on the system.
-    pub(crate) fn list_swap_devices() -> std::io::Result<Vec<SwapDevice>> {
-        // TODO
-        let devs = vec![];
-        Ok(devs)
-    }
-
-    // TODO: could make this a swap device object as an arg
-    /// Add a swap device at the given path
-    pub fn add_swap_device(
+    pub(crate) struct SwapDevice {
+        /// path to the resource
         path: String,
-        offset: ByteCount,
-        length: ByteCount,
-    ) -> std::io::Result<()> {
-        // TODO
-        Ok(())
+
+        /// starting block on device used for swap
+        start: u64,
+
+        /// length of swap area
+        length: u64,
+
+        /// total number of pages used for swapping
+        total_pages: u64,
+
+        /// free npages for swapping
+        free_pages: u64,
+
+        flags: i64,
     }
 
     // swapctl(2)
@@ -231,7 +246,7 @@ mod swapctl {
     // SC_ADD / SC_REMOVE arg
     #[repr(C)]
     #[derive(Debug, Copy, Clone)]
-    pub struct swapres {
+    struct swapres {
         sr_name: *const libc::c_char,
         sr_start: libc::off_t,
         sr_length: libc::off_t,
@@ -240,13 +255,13 @@ mod swapctl {
     // SC_LIST arg: swaptbl with an embedded array of swt_n swapents
     #[repr(C)]
     #[derive(Debug, Clone)]
-    pub struct swaptbl {
+    struct swaptbl {
         swt_n: i32,
         swt_ent: [swapent; N_SWAPENTS],
     }
     #[repr(C)]
     #[derive(Debug, Copy, Clone)]
-    pub struct swapent {
+    struct swapent {
         ste_path: *const libc::c_char,
         ste_start: libc::off_t,
         ste_length: libc::off_t,
@@ -267,7 +282,7 @@ mod swapctl {
         }
     }
 
-    // The argument for SC_LIST (swaptbl) requires an embedded array in the struct,
+    // The argument for SC_LIST (struct swaptbl) requires an embedded array in the struct,
     // with swt_n entries, each of which requires a pointer to store the path to the
     // device.
     //
@@ -283,6 +298,8 @@ mod swapctl {
     // and eventually, we should send an ereport.
     const N_SWAPENTS: usize = 3;
 
+    // Wrapper around swapctl(2) call. All commands except SC_GETNSWP require an
+    // argument, hence `data` being an optional parameter.
     unsafe fn swapctl_cmd<T>(
         cmd: i32,
         data: Option<*mut T>,
@@ -308,20 +325,16 @@ mod swapctl {
         unsafe { swapctl_cmd::<i32>(SC_GETNSWP, None) }
     }
 
-    fn swapctl_list_devices(ndev: u32) -> std::io::Result<Vec<SwapDevice>> {
-        assert!(ndev > 0);
-
-        let devs: Vec<SwapDevice> = Vec::with_capacity(ndev as usize);
-
-        // statically allocate the array of swapents for SC_LIST
-        //
-        // see comment on `N_SWAPENTS` for details
+    /// List swap devices on the system.
+    pub(crate) fn list_swap_devices() -> std::io::Result<Vec<SwapDevice>> {
+        // Statically create the array of swapents for SC_LIST: see comment on
+        // `N_SWAPENTS` for details.
         const MAXPATHLEN: usize = libc::PATH_MAX as usize;
         assert_eq!(N_SWAPENTS, 3);
+        // TODO: comment here about why a char array, or figure out if I should be using CStr
         let p1 = [0i8; MAXPATHLEN];
         let p2 = [0i8; MAXPATHLEN];
         let p3 = [0i8; MAXPATHLEN];
-
         let entries: [swapent; N_SWAPENTS] = [
             swapent {
                 ste_path: &p1 as *const libc::c_char,
@@ -339,12 +352,45 @@ mod swapctl {
 
         let mut list_req =
             swaptbl { swt_n: N_SWAPENTS as i32, swt_ent: entries };
-
         let n_devices = unsafe { swapctl_cmd(SC_LIST, Some(&mut list_req))? };
 
-        // extract out the device information
-        // TODO
+        let mut devices = Vec::with_capacity(n_devices as usize);
+        for i in 0..n_devices as usize {
+            let e = entries[i];
 
-        Ok(devs)
+            let p = unsafe { std::ffi::CStr::from_ptr(e.ste_path) };
+            let path = String::from_utf8_lossy(p.to_bytes()).to_string();
+
+            devices.push(SwapDevice {
+                path: path,
+                start: e.ste_start as u64,
+                length: e.ste_length as u64,
+                total_pages: e.ste_pages as u64,
+                free_pages: e.ste_free as u64,
+                flags: e.ste_flags,
+            });
+        }
+
+        Ok(devices)
+    }
+
+    /// Add a swap device at the given path
+    pub fn add_swap_device(
+        path: String,
+        start: u64,
+        length: u64,
+    ) -> std::io::Result<()> {
+        let name = std::ffi::CString::new(path)?;
+
+        let mut add_req = swapres {
+            sr_name: name.as_ptr(),
+            sr_start: start as i64,
+            sr_length: length as i64,
+        };
+
+        let res = unsafe { swapctl_cmd(SC_ADD, Some(&mut add_req))? };
+        assert_eq!(res, 0); // non-zero result handled by swapctl_cmd
+
+        Ok(())
     }
 }
