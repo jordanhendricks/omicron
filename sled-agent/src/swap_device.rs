@@ -356,7 +356,7 @@ mod swapctl {
 
         let mut devices = Vec::with_capacity(n_devices as usize);
         for i in 0..n_devices as usize {
-            let e = entries[i];
+            let e = list_req.swt_ent[i];
 
             let p = unsafe { std::ffi::CStr::from_ptr(e.ste_path) };
             let path = String::from_utf8_lossy(p.to_bytes()).to_string();
