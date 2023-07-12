@@ -245,8 +245,7 @@ impl SledAgent {
                     &parent_log,
                     &boot_disk.1,
                     sz,
-                )
-                .await?;
+                )?;
             }
             Some(sz) if sz == 0 => {
                 panic!("Invalid requested swap device size of 0 GiB");

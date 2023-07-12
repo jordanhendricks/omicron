@@ -2,6 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+/// Operations for creating a system swap device.
+use std::io::Read;
+use zeroize::Zeroize;
+
 #[derive(Debug, thiserror::Error)]
 pub enum SwapDeviceError {
     #[error("Could not find boot disk")]
@@ -10,17 +14,14 @@ pub enum SwapDeviceError {
     #[error("Error running ZFS command: {0}")]
     Zfs(illumos_utils::ExecutionError),
 
-    #[error("{msg}: {error}")]
-    Keyfile {
-        error: String,
-        msg: &'static str,
-    },
-
     #[error("Error listing swap devices: {0}")]
     ListDevices(String),
 
     #[error("Error adding swap device: {msg} (path=\"{path}\", start={start}, length={length})")]
     AddDevice { msg: String, path: String, start: u64, length: u64 },
+
+    #[error("{msg}: {error}")]
+    Misc { msg: String, error: String },
 }
 
 /// Ensure the system has a swap device, creating the underlying block
@@ -55,7 +56,7 @@ pub enum SwapDeviceError {
 /// path for the zvol ever changes, we will need to at least support a window
 /// where we check for both the previously well-known path and the new
 /// configuration.
-pub(crate) async fn ensure_swap_device(
+pub(crate) fn ensure_swap_device(
     log: &slog::Logger,
     boot_zpool_name: &illumos_utils::zpool::ZpoolName,
     size_gb: u8,
@@ -82,15 +83,18 @@ pub(crate) async fn ensure_swap_device(
 
     let swap_zvol = format!("{}/{}", boot_zpool_name, "swap");
     if zvol_exists(&swap_zvol)? {
+        info!(log, "swap zvol \"{}\" aleady exists; destroying", swap_zvol);
         zvol_destroy(&swap_zvol)?;
+        info!(log, "swap zvol \"{}\" destroyed", swap_zvol);
     }
 
     // The process of paging out using block I/O, so use the "dsk" version of
     // the zvol path (as opposed to "rdsk", which is for character/raw access.)
     let swapname = format!("/dev/zvol/dsk/{}", swap_zvol);
-    create_encrypted_swap_zvol(log, &swapname, size_gb).await?;
+    create_encrypted_swap_zvol(log, &swapname, size_gb)?;
 
     // Specifying 0 length tells the kernel to use the size of the device.
+    info!(log, "adding swap device: swapname=\"{}\"", swapname);
     swapctl::add_swap_device(swapname, 0, 0)?;
 
     Ok(())
@@ -125,8 +129,7 @@ fn zvol_exists(name: &str) -> Result<bool, SwapDeviceError> {
     Ok(found)
 }
 
-// Destroys a zvol at the given path, double checking that it's gone after
-// issuing the destroy command.
+// Destroys a zvol at the given path.
 fn zvol_destroy(name: &str) -> Result<(), SwapDeviceError> {
     let mut command = std::process::Command::new(illumos_utils::zfs::ZFS);
     let cmd = command.args(&["destroy", name]);
@@ -142,80 +145,120 @@ fn zvol_destroy(name: &str) -> Result<(), SwapDeviceError> {
 
 // Creates an encrypted zvol at the input path with the given size.
 //
-// The keyfile is created in a location and tmpfs and unlinked after the zvol is
-// created.
-async fn create_encrypted_swap_zvol(
+// We create the key from random bytes, pipe it to stdin to minimize copying,
+// and zeroize the buffer after the zvol is created.
+fn create_encrypted_swap_zvol(
     log: &slog::Logger,
     name: &str,
     size_gb: u8,
 ) -> Result<(), SwapDeviceError> {
-    // Create an ephemeral key from random bytes.
-    let mut urandom = std::fs::OpenOptions::new().create(false).read(true).open("/dev/urandom").map_err(|e| Keyfile {
-        msg: "could not open /dev/urandom",
-        error: e.to_string(),
-    })?;
-    let mut bytes = vec![0u8; 64];
-    urandom.read_exact(&mut bytes).map_err(|e| Keyfile {
-        msg: "could not read from /dev/urandom",
-        error: e.to_string(),
-    })?;
+    info!(
+        log,
+        "attempting to create encrypted zvol: name=\"{}\", size_gb={}",
+        name,
+        size_gb
+    );
 
+    // Create the zvol, piping the random bytes to stdin.
+    let size_arg = format!("{}G", size_gb);
+    let page_size =
+        illumos_utils::libc::sysconf(libc::_SC_PAGESIZE).map_err(|e| {
+            SwapDeviceError::Misc {
+                msg: "could not access PAGESIZE from sysconf".to_string(),
+                error: e.to_string(),
+            }
+        })?;
+    let mut command = std::process::Command::new(illumos_utils::zfs::ZFS);
+    #[rustfmt::skip]
+    let cmd = command
+        // create sparse volume of a given size with no reservation, exported as
+        // a block device at: /dev/zvol/{dsk,rdsk}/<name>
+        .arg("create")
+        .args(&["-V", &size_arg])
+        .arg("-s")
 
-    // TODO: path, generate random bytes
-    let kp = illumos_utils::zfs::Keypath(camino::Utf8PathBuf::from(format!(
-        "{}/swap",
-        sled_hardware::disk::KEYPATH_ROOT
-    )));
-    let keypath = format!("{}", kp);
-    let key = [0; 32];
-    let mut keyfile = sled_hardware::KeyFile::create(kp, &key, log)
-        .await
-        .map_err(|e| SwapDeviceError::Keyfile {
-            msg: "could not create keyfile",
+        // equivalent to volblocksize=blocksize
+        // should use PAGESIZE from sysconf
+        .args(&["-b", &page_size.to_string()])
+
+        // don't use log device
+        .args(&["-o", "logbias=throughput"])
+
+        // only cache metadata in ARC
+        // don't use secondary cache
+        .args(&["-o", "primarycache=metadata"])
+        .args(&["-o", "secondarycache=none"])
+
+        // encryption format, with a raw key (32 bytes), with the key coming
+        // from stdin
+        .args(&["-o", "encryption=aes-256-gcm"])
+        .args(&["-o", "keyformat=raw"])
+        .args(&["-o", "keylocation=file:///dev/stdin"])
+
+        // name of device: something like, oxi_<M.2 zpool uuid>/swap
+        .arg(name)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    // Generate random bytes for the key.
+    let mut urandom = std::fs::OpenOptions::new()
+        .create(false)
+        .read(true)
+        .open("/dev/urandom")
+        .map_err(|e| SwapDeviceError::Misc {
+            msg: "could not open /dev/urandom".to_string(),
             error: e.to_string(),
         })?;
-
-    // Create the zvol
-    let size_arg = format!("{}G", size_gb);
-    let mut command = std::process::Command::new(illumos_utils::zfs::ZFS);
-    let cmd = command.args(&[
-        "create",
-        "-s",
-        "-V",
-        &size_arg,
-        "-b",
-        // TODO: correct thing here for pageconf
-        "4096",
-        "-o",
-        "logbias=throughput",
-        "-o",
-        "primarycache=metadata",
-        "-o",
-        "secondarycache=none",
-        "-o",
-        "encryption=aes-256-gcm",
-        "-o",
-        "keyformat=raw",
-        "-o",
-        &keypath,
-        name,
-    ]);
-
-    illumos_utils::execute(cmd).map_err(|e| SwapDeviceError::Zfs(e))?;
-
-    // Unlink the key.
-    keyfile.zero_and_unlink().await.map_err(|e| {
-        SwapDeviceError::Keyfile {
-            msg: "could not zero and unlink keyfile",
-            error: e.to_string(),
-        }
+    let mut secret = vec![0u8; 32];
+    urandom.read_exact(&mut secret).map_err(|e| SwapDeviceError::Misc {
+        msg: "could not read from /dev/urandom".to_string(),
+        error: e.to_string(),
     })?;
+
+    // Spawn the process, writing the key in through stdin.
+    let mut child = cmd.spawn().map_err(|e| SwapDeviceError::Misc {
+        msg: format!("failed to spawn `zfs create` for zvol \"{}\"", name),
+        error: e.to_string(),
+    })?;
+    let mut stdin = child.stdin.take().unwrap();
+    let child_log = log.clone();
+    let hdl = std::thread::spawn(move || {
+        use std::io::Write;
+        let res = stdin.write_all(&secret);
+        if res.is_err() {
+            error!(child_log,
+                "could not write key to stdin of `zfs create` for swap zvol: {:?}",
+                res);
+        }
+        secret.zeroize();
+    });
+
+    // Wait for the process, and the thread writing the bytes to it, to complete.
+    let output =
+        child.wait_with_output().map_err(|e| SwapDeviceError::Misc {
+            msg: "failed to read stdout".to_string(),
+            error: e.to_string(),
+        })?;
+    hdl.join().unwrap();
+
+    if !output.status.success() {
+        return Err(SwapDeviceError::Zfs(illumos_utils::output_to_exec_error(
+            &command, &output,
+        )));
+    }
 
     // TODO: remove after testing
     if !zvol_exists(name)? {
         panic!("zvol not created successfully");
     }
 
+    info!(
+        log,
+        "successfully created encrypted zvol: name=\"{}\", size_gb={}",
+        name,
+        size_gb
+    );
     Ok(())
 }
 
@@ -223,6 +266,7 @@ async fn create_encrypted_swap_zvol(
 mod swapctl {
     use crate::swap_device::SwapDeviceError;
 
+    /// A representation of a swap device, as returned from swapctl(2) SC_LIST
     #[derive(Debug)]
     #[allow(dead_code)]
     pub(crate) struct SwapDevice {
@@ -256,7 +300,7 @@ mod swapctl {
     const SC_REMOVE: i32 = 0x3;
     const SC_GETNSWP: i32 = 0x4;
 
-    // SC_ADD / SC_REMOVE arg
+    // argument for SC_ADD and SC_REMOVE
     #[repr(C)]
     #[derive(Debug, Copy, Clone)]
     struct swapres {
@@ -265,7 +309,7 @@ mod swapctl {
         sr_length: libc::off_t,
     }
 
-    // SC_LIST arg: swaptbl with an embedded array of swt_n swapents
+    // argument for SC_LIST: swaptbl with an embedded array of swt_n swapents
     #[repr(C)]
     #[derive(Debug, Clone)]
     struct swaptbl {
@@ -295,21 +339,21 @@ mod swapctl {
         }
     }
 
-    // The argument for SC_LIST (struct swaptbl) requires an embedded array in the struct,
-    // with swt_n entries, each of which requires a pointer to store the path to the
-    // device.
+    // The argument for SC_LIST (struct swaptbl) requires an embedded array in
+    // the struct, with swt_n entries, each of which requires a pointer to store
+    // the path to the device.
     //
-    // Ideally, we would want to query the number of swap devices on the system via
-    // SC_GETNSWP, allocate enough memory for each device entry, then pass in
-    // this memory to the list command. Unfortunately, creating a generically
-    // large array embedded in a struct that can be passed to C is a bit of a
-    // challenge in safe Rust. So instead, we just pick a reasonable max number
-    // of devices to list.
+    // Ideally, we would want to query the number of swap devices on the system
+    // via SC_GETNSWP, allocate enough memory for each device entry, then pass
+    // in pointers to memory to the list command. Unfortunately, creating a
+    // generically large array embedded in a struct that can be passed to C is a
+    // bit of a challenge in safe Rust. So instead, we just pick a reasonable
+    // max number of devices to list.
     //
-    // We pick a max of 3 devices, somewhat arbitrarily, but log the number of
-    // swap devices we see regardless. We only ever expect to see 0 or 1 swap
-    // device(s); if there are more, that is a bug. In this case we log a warning,
-    // and eventually, we should send an ereport.
+    // We pick a max of 3 devices, somewhat arbitrarily. We only ever expect to
+    // see 0 or 1 swap device(s); if there are more, that is a bug. In the case
+    // that we see more than 1 swap device, we log a warning, and eventually, we
+    // should send an ereport.
     const N_SWAPENTS: usize = 3;
 
     // Wrapper around swapctl(2) call. All commands except SC_GETNSWP require an
@@ -336,15 +380,10 @@ mod swapctl {
         Ok(res as u32)
     }
 
-    #[allow(dead_code)]
-    fn swapctl_get_num_devices() -> std::io::Result<u32> {
-        unsafe { swapctl_cmd::<i32>(SC_GETNSWP, None) }
-    }
-
     /// List swap devices on the system.
     pub(crate) fn list_swap_devices() -> Result<Vec<SwapDevice>, SwapDeviceError>
     {
-        // Statically create the array of swapents for SC_LIST: see comment on
+        // Statically create the array of swapents for SC_LIST; see comment on
         // `N_SWAPENTS` for details as to why we do this statically.
         //
         // Each swapent requires a char * pointer in our control for the
@@ -353,11 +392,11 @@ mod swapctl {
         // by the kernel, we mark them as mutable. (Note that the compiler will
         // happily accept these definitions as non-mutable, since it can't know
         // what happens to the pointers on the C side, but not marking them as
-        // mutable is undefined behavior, since they can be mutated).
+        // mutable when they may be in fact be mutated is undefined behavior).
         //
         // Per limits.h(3HEAD), PATH_MAX is the max number of bytes in a path
         // name, including the null terminating character, so these buffers
-        // have sufficient space.
+        // have sufficient space for paths on the system.
         const MAXPATHLEN: usize = libc::PATH_MAX as usize;
         assert_eq!(N_SWAPENTS, 3);
         let mut p1 = [0i8; MAXPATHLEN];
@@ -391,20 +430,20 @@ mod swapctl {
         for i in 0..n_devices as usize {
             let e = list_req.swt_ent[i];
 
-            // Safety: CStr::from_ptr is documeted as safe if:
-            //   1. The pointer contains a valid nul terminator at the end of the
-            // string
-            //   2. The pointer is valid for reads of bytes up to and including the
-            // null terminator
-            //   3. The memory referenced by the return CStr is not mutated for the
-            // duration of lifetime 'a
+            // Safety: CStr::from_ptr is documented as safe if:
+            //   1. The pointer contains a valid null terminator at the end of
+            //      the string
+            //   2. The pointer is valid for reads of bytes up to and including
+            //      the null terminator
+            //   3. The memory referenced by the return CStr is not mutated for
+            //      the duration of lifetime 'a
             //
             // (1) is true because we initialize the buffers for ste_path as all
             // 0s, and their length is long enough to include the null
-            // terminator for paths on the system.
+            // terminator for all paths on the system.
             // (2) should be guaranteed by the syscall itself, and we can know
             // how many entries are valid via its return value.
-            // (3) we aren't currently mutating the memory referenced by the
+            // (3) We aren't currently mutating the memory referenced by the
             // CStr, though there's nothing here enforcing that.
             let p = unsafe { std::ffi::CStr::from_ptr(e.ste_path) };
             let path = String::from_utf8_lossy(p.to_bytes()).to_string();
@@ -448,7 +487,6 @@ mod swapctl {
         };
         // Unwrap safety: We know this isn't null because we just created it
         let ptr = std::ptr::NonNull::new(&mut add_req).unwrap();
-
         let res = unsafe {
             swapctl_cmd(SC_ADD, Some(ptr)).map_err(|e| {
                 SwapDeviceError::AddDevice {
