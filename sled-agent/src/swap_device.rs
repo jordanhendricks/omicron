@@ -59,7 +59,7 @@ pub enum SwapDeviceError {
 pub(crate) fn ensure_swap_device(
     log: &slog::Logger,
     boot_zpool_name: &illumos_utils::zpool::ZpoolName,
-    size_gb: u8,
+    size_gb: u32,
 ) -> Result<(), SwapDeviceError> {
     assert!(size_gb > 0);
 
@@ -150,7 +150,7 @@ fn zvol_destroy(name: &str) -> Result<(), SwapDeviceError> {
 fn create_encrypted_swap_zvol(
     log: &slog::Logger,
     name: &str,
-    size_gb: u8,
+    size_gb: u32,
 ) -> Result<(), SwapDeviceError> {
     info!(
         log,
