@@ -237,9 +237,13 @@ impl SledAgent {
         match config.swap_device_size_gb {
             Some(sz) if sz > 0 => {
                 info!(log, "Requested swap device of size {} GiB", sz);
+                let boot_disk =
+                    storage.resources().boot_disk().await.ok_or_else(|| {
+                        crate::swap_device::SwapDeviceError::BootDiskNotFound
+                    })?;
                 crate::swap_device::ensure_swap_device(
                     &parent_log,
-                    &storage,
+                    &boot_disk.1,
                     sz,
                 )
                 .await?;
@@ -251,8 +255,6 @@ impl SledAgent {
                 info!(log, "Not setting up swap device: not configured");
             }
         }
-        // print the boot disk for funsies
-        info!(log, "boot disk: {:?}", storage.resources().boot_disk().await);
 
         let etherstub = Dladm::ensure_etherstub(
             illumos_utils::dladm::UNDERLAY_ETHERSTUB_NAME,

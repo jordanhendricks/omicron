@@ -26,7 +26,9 @@ data_link = "cxgbe0"
 vmm_reservoir_percentage = 0
 
 # Swap device size for the system.
-# We pick 256 GiB somewhat arbitrarily as a starting point.
+# We pick 256 GiB somewhat arbitrarily, since the device is sparsely allocated.
+# This field is only needed for the gimlet configuration: helios configures a
+# swap device by default.
 swap_device_size_gb = 256
 
 [log]
