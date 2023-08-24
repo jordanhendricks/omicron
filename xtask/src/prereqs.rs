@@ -1,3 +1,12 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+//! prereqs xtask: A tool to help developers understand and manage dependencies
+//! needed for building and/or running Omicron.
+// TODO: document position on guest OS support
+// TODO: document what "running" really means
+
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
@@ -6,24 +15,26 @@ use clap::{clap_derive::ValueEnum, Subcommand};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use slog::{error, info, warn, Drain, Logger};
 
+/// Marker file used to ensure this tool can't be run on shared machines (or any
+/// other machine that one might want to protect against installing packages or
+/// binaries).
 static MARKER_FILE: &str = "/etc/opt/oxide/NO_INSTALL";
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Debug)]
 pub(crate) enum PrereqCmd {
-    /// Check whether this system is suitable for building/running omicron
+    /// Check whether this system is suitable for building/running Omicron
     Check {
         /// Print output as JSON
         #[clap(short = 'j', long)]
         json: bool,
 
-        /// Specify whether this system is for building omicron,
+        /// Specify whether this system is for building Omicron,
         /// running/deploying it, or both
         #[clap(short = 's', long, default_value = "all")]
         system: SystemType,
     },
 
     /// Install prerequisite packages and dependencies
-    // TODO: option for -y?
     Install {
         /// Dry run (display what commands will be run, but don't run them)
         #[clap(short = 'n')]
@@ -39,11 +50,13 @@ pub(crate) enum PrereqCmd {
         dep: DepType,
     },
 
+    // TODO: option to specify specific OS or auto-detect (I think I need a
+    // default parser for that.)
     /// List prerequisite packages and dependencies
-    // TODO: option to specify specific OS
     List,
 }
 
+/// Whether this system is intended for building Omicron, running it, or both.
 #[derive(Debug, Clone, ValueEnum)]
 pub(crate) enum SystemType {
     Build,
@@ -51,34 +64,22 @@ pub(crate) enum SystemType {
     All,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub(crate) enum DepType {
     /// Install a specific package
     Pkg {
-        /// Dry run (display what commands will be run, but don't run them)
-        #[clap(short = 'n')]
-        dry_run: bool,
-
-        /// Package name
-        name: String,
+        /// Package name(s)
+        names: Vec<String>,
     },
 
     /// Install a specific binary dependency
     Bin {
-        /// Dry run (display what commands will be run, but don't run them)
-        #[clap(short = 'n')]
-        dry_run: bool,
-
-        /// Dependency name
-        name: String,
+        /// Dependency name(s)
+        names: Vec<String>,
     },
 
     /// Install all dependencies
-    All {
-        /// Dry run (display what commands will be run, but don't run them)
-        #[clap(short = 'n')]
-        dry_run: bool,
-    },
+    All,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -91,7 +92,7 @@ struct PackageDef {
     helios: Vec<PathBuf>,
 }
 
-fn read_cargo_toml(path: &Utf8Path) -> Result<PrereqManifest> {
+fn read_prereq_toml(path: &Utf8Path) -> Result<PrereqManifest> {
     let bytes =
         std::fs::read(path).with_context(|| format!("read {:?}", path))?;
     let raw = std::str::from_utf8(&bytes).expect("config should be valid utf8");
@@ -108,24 +109,32 @@ pub(crate) fn cmd_prereqs(cmd: PrereqCmd) -> Result<()> {
         let drain = slog_async::Async::new(drain).build().fuse();
         slog::Logger::root(drain, slog::o!())
     } else {
-        let drain =
-            std::sync::Mutex::new(slog_bunyan::with_name("omicron-prereqs", std::io::stdout())
-                .build())
-                .fuse();
+        let drain = std::sync::Mutex::new(
+            slog_bunyan::with_name("omicron-prereqs", std::io::stdout())
+                .build(),
+        )
+        .fuse();
         slog::Logger::root(drain, slog::o!())
     };
 
-    //println!("{:?}", read_cargo_toml("xtask/src/prereq_config.toml".into())?);
+    //println!("{:?}", read_prereq_toml("xtask/src/prereq_config.toml".into())?);
+    //info!(log, "{:?}", cmd);
 
     match cmd {
         PrereqCmd::Check { json, system } => todo!(),
         PrereqCmd::Install { dry_run, system, dep } => {
-            cmd_install(&log, dry_run, system, dep);
+            cmd_install(&log, dry_run, system, dep)?
         }
         PrereqCmd::List => todo!(),
     }
 
     Ok(())
+}
+
+fn check_noinstall_marker() -> Result<bool> {
+    Utf8Path::new(MARKER_FILE)
+        .try_exists()
+        .with_context(|| format!("checking marker file {:?}", MARKER_FILE))
 }
 
 fn cmd_install(
@@ -134,75 +143,58 @@ fn cmd_install(
     t: SystemType,
     dep: DepType,
 ) -> Result<()> {
-    let no_install = Utf8Path::new(MARKER_FILE)
-        .try_exists()
-        .with_context(|| format!("checking marker file {:?}", MARKER_FILE))?;
-
     // TODO: informative log message
 
-    match (no_install, dry_run) {
-        (true, true) => {
-            // Since this is a dry run, allow things to proceed, but make some
-            // noise about the marker file being found.
-            warn!(log, "NO_INSTALL marker file found");
+    // Is the NO_INSTALL marker file set?
+    if check_noinstall_marker()? {
+        warn!(
+            log,
+            "{}",
+            format!("NO_INSTALL marker file ({}) found", MARKER_FILE)
+        );
+
+        // If this is a dry run, allow that to proceed, but otherwise: abort
+        // ship!
+        if !dry_run {
+            bail!("aborting install due to existence of NO_INSTALL marker");
         }
-        (true, false) => {
-            // Not a dry run, so bail out here.
-            bail!("NO_INSTALL marker file found; aborting install");
-        }
-        _ => {}
     }
 
+    // TODO: get package manager and names of packages from TOML
     let p = Pkg {};
     match dep {
-        DepType::Pkg { dry_run, name } => {
-            p.install(log, dry_run, vec![name])?
+        DepType::Pkg { names } => {
+            if names.len() == 0 {
+                // TODO: better error message here?
+                bail!("no package names specified");
+            }
+
+            p.install(log, dry_run, names)?
         }
-        DepType::Bin { dry_run, name } => install_bin(log, dry_run, name)?,
+        DepType::Bin { names } => {
+            if names.len() == 0 {
+                // TODO: better error message here?
+                bail!("no dependency names specified");
+            }
+
+            install_bin(log, dry_run, names)?
+        }
         // TODO: real list of pkgs
-        DepType::All { dry_run } => install_all(log, dry_run, vec![])?,
+        DepType::All => {
+            p.install(log, dry_run, vec![])?;
+            install_bin(log, dry_run, vec![])?
+        }
     }
 
     Ok(())
 }
 
-fn install_all(log: &Logger, dry_run: bool, pkgs: Vec<String>) -> Result<()> {
-    todo!()
-}
-
-fn install_bin(log: &Logger, dry_run: bool, name: String) -> Result<()> {
+fn install_bin(log: &Logger, dry_run: bool, names: Vec<String>) -> Result<()> {
     todo!()
 }
 
 struct Pkg {}
 impl PackageManager for Pkg {
-    /*
-    fn install_pkgs(&self, log: &Logger, dry_run: bool, pkgs: Vec<String>) -> Result<()> {
-
-
-        let cmd_str = ["pfexec pkg install -v ", name].join(" ");
-        let mut command = std::process::Command::new("pfexec");
-        let cmd = command.args(["pkg", "install", "-v"]).arg(name);
-
-        let mut args = Vec::new();
-        args.push(cmd.get_program());
-        let mut args = cmd.get_args().map(|s| args.push(s));
-        let s = args.collect::<Vec<&std::ffi::OsStr>>().join(std::ffi::OsStr::new(" "));
-        info!(log, "{:?} {:?}", cmd.get_program(), args);
-        if dry_run {
-            return Ok(());
-        }
-
-        let output = cmd.output().context("could not get cmd output")?;
-
-        if !output.status.success() {
-            bail!("command failed");
-        }
-
-        Ok(())
-    }
-    */
-
     fn name(&self) -> &'static str {
         "helios"
     }
@@ -211,7 +203,7 @@ impl PackageManager for Pkg {
         &self,
         log: &Logger,
         dry_run: bool,
-        mut pkgs: Vec<String>,
+        pkgs: Vec<String>,
     ) -> Result<()> {
         let mut base = vec![
             "pfexec".to_owned(),
@@ -219,7 +211,7 @@ impl PackageManager for Pkg {
             "install".to_owned(),
             "-v".to_owned(),
         ];
-        base.append(&mut pkgs);
+        base.append(&mut pkgs.clone());
         let cmd_str = base.join(" ");
 
         // TODO: way to differentiate logging from commands here
@@ -239,15 +231,11 @@ impl PackageManager for Pkg {
         if code != 0 && code != 4 {
             info!(log, "stdout: {}", String::from_utf8_lossy(&output.stdout));
             info!(log, "stderr: {}", String::from_utf8_lossy(&output.stderr));
-            error!(
-                log,
-                "could not install packages with command: \"{}\" ({})",
-                cmd_str,
-                output.status
-            );
+            error!(log, "command failed: \"{}\" ({})", cmd_str, output.status);
+            bail!("could not install packages: {}", pkgs.join(", "));
         }
 
-        info!(log, "packages installed successfully");
+        info!(log, "packages: \"{}\" installed successfully", pkgs.join(", "));
 
         Ok(())
     }
