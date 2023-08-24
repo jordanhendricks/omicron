@@ -1,0 +1,48 @@
+[helios]
+packages = [
+	"pkg:/package/pkg",
+	"build-essential",
+	"library/postgresql-13",
+	"pkg-config",
+	"library/libxmlsec1",
+
+	# "bindgen leverages libclang to preprocess, parse, and type check C and
+	# C++ header files."
+	"pkg:/ooce/developer/clang-15"
+]
+install_cmd = "pfexec pkg install -v"
+# TODO: mediators
+
+[debian_like]
+packages = [
+      "libpq-dev",
+      "pkg-config",
+      "xmlsec1",
+      "libxmlsec1-dev",
+      "libxmlsec1-openssl",
+      "libclang-dev",
+      "libsqlite3-dev",
+]
+
+# TODO: refresh
+install_cmd = "sudo apt-get install"
+
+
+[macos]
+packages = [
+      "coreutils",
+      "postgresql",
+      "pkg-config",
+      "libxmlsec1",
+]
+install_cmd = "brew install"
+
+[bin.clickhouse]
+version = "v22.8.9.24"
+source = "https://oxide-clickhouse-build.s3.us-west-2.amazonaws.com"
+check_cmd = "clickhouse server --version"
+
+[bin.clickhouse.md5sums]
+darwin="20603974a929926591fca70ff1df0e45"
+linux="ea909519bd9d989fd5d090fd9bdd42f1"
+illumos="7702939ce5b4b51846a1ba39f1392306"

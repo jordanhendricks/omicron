@@ -3,8 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! Workspace-related developer tools
-//!
-//! See <https://github.com/matklad/cargo-xtask>.
+//!  See <https://github.com/matklad/cargo-xtask>.
+
+mod prereqs;
 
 use anyhow::{bail, Context, Result};
 use camino::Utf8Path;
@@ -12,6 +13,8 @@ use cargo_metadata::Metadata;
 use cargo_toml::{Dependency, Manifest};
 use clap::{Parser, Subcommand};
 use std::{collections::BTreeMap, process::Command};
+
+use crate::prereqs::{cmd_prereqs, PrereqsCmd};
 
 #[derive(Parser)]
 #[command(name = "cargo xtask", about = "Workspace-related developer tools")]
@@ -27,6 +30,27 @@ enum Cmds {
     CheckWorkspaceDeps,
     /// Run configured clippy checks
     Clippy,
+    /// Manage prerequisite dependencies for Omicron development
+    Prereqs {
+        #[clap(subcommand)]
+        cmd: PrereqsCmd,
+
+        /// Specify use case
+        #[clap(short = 'u', long, default_value = "build")]
+        use_case: prereqs::UseCase,
+
+        /// Override detected host OS
+        #[clap(short = 'o', long, value_enum)]
+        host_os: Option<prereqs::HostOs>,
+
+        /// Override package manager install command
+        #[clap(short = 'i', long)]
+        install_cmd: Option<String>,
+
+        /// Override default TOML file
+        #[clap(short = 'c', long)]
+        cfg_file: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -34,6 +58,9 @@ fn main() -> Result<()> {
     match args.cmd {
         Cmds::Clippy => cmd_clippy(),
         Cmds::CheckWorkspaceDeps => cmd_check_workspace_deps(),
+        Cmds::Prereqs { cmd, host_os, install_cmd, use_case, cfg_file } => {
+            cmd_prereqs(cmd, use_case, host_os, install_cmd, cfg_file)
+        }
     }
 }
 
