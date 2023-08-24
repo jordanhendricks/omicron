@@ -1,0 +1,3 @@
+[packages]
+helios = [ "pkg:/package/pkg", "build-essential", "library/postgresql-13",
+"pkg-config", "library/libxmlsec1", "pkg:/ooce/developer/clang-15" ]
