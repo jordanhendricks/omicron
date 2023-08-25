@@ -10120,10 +10120,17 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atty",
  "camino",
  "cargo_metadata",
  "cargo_toml",
  "clap 4.4.3",
+ "serde",
+ "slog",
+ "slog-async",
+ "slog-bunyan",
+ "slog-term",
+ "toml 0.7.6",
 ]
 
 [[package]]

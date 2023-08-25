@@ -14,7 +14,7 @@ use cargo_toml::{Dependency, Manifest};
 use clap::{Parser, Subcommand};
 use std::{collections::BTreeMap, process::Command};
 
-use crate::prereqs::{cmd_prereqs, PrereqCmd};
+use crate::prereqs::{cmd_prereqs, PrereqsCmd};
 
 #[derive(Parser)]
 #[command(name = "cargo xtask", about = "Workspace-related developer tools")]
@@ -31,9 +31,17 @@ enum Cmds {
     /// Run configured clippy checks
     Clippy,
     /// Manage prerequisite dependencies for building or running Omicron
-    Prereq {
+    Prereqs {
         #[clap(subcommand)]
-        cmd: PrereqCmd,
+        cmd: PrereqsCmd,
+
+        /// Override detected host OS
+        #[clap(short = 'o', long, value_enum)]
+        host_os: Option<prereqs::HostOs>,
+
+        /// Override package manager install command
+        #[clap(short = 'c', long)]
+        install_cmd: Option<String>,
     },
 }
 
@@ -42,7 +50,9 @@ fn main() -> Result<()> {
     match args.cmd {
         Cmds::Clippy => cmd_clippy(),
         Cmds::CheckWorkspaceDeps => cmd_check_workspace_deps(),
-        Cmds::Prereq { cmd } => cmd_prereqs(cmd),
+        Cmds::Prereqs { cmd, host_os, install_cmd } => {
+            cmd_prereqs(cmd, host_os, install_cmd)
+        }
     }
 }
 
