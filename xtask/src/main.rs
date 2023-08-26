@@ -30,7 +30,7 @@ enum Cmds {
     CheckWorkspaceDeps,
     /// Run configured clippy checks
     Clippy,
-    /// Manage prerequisite dependencies for building or running Omicron
+    /// Manage prerequisite dependencies for Omicron development
     Prereqs {
         #[clap(subcommand)]
         cmd: PrereqsCmd,
@@ -42,6 +42,10 @@ enum Cmds {
         /// Override package manager install command
         #[clap(short = 'c', long)]
         install_cmd: Option<String>,
+
+        /// Specify use case
+        #[clap(short = 'u', long, default_value = "all")]
+        use_case: prereqs::UseCase,
     },
 }
 
@@ -50,8 +54,8 @@ fn main() -> Result<()> {
     match args.cmd {
         Cmds::Clippy => cmd_clippy(),
         Cmds::CheckWorkspaceDeps => cmd_check_workspace_deps(),
-        Cmds::Prereqs { cmd, host_os, install_cmd } => {
-            cmd_prereqs(cmd, host_os, install_cmd)
+        Cmds::Prereqs { cmd, host_os, install_cmd, use_case } => {
+            cmd_prereqs(cmd, host_os, install_cmd, use_case)
         }
     }
 }

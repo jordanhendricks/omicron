@@ -1,0 +1,77 @@
+[helios]
+build_packages = [
+	"build-essential",
+	"build-essential",
+	"library/postgresql-13",
+	"pkg-config",
+	"library/libxmlsec1",
+
+	# "bindgen leverages libclang to preprocess, parse, and type check C and
+	# C++ header files."
+	"pkg:/ooce/developer/clang-15"
+]
+
+# TODO: include real list, removing duplicates in software.
+deploy_packages = [
+      "brand/omicron1/tools",
+      "library/libxmlsec1"
+]
+build_deps = [
+	"cockroachdb",
+	"clickhouse",
+	"console",
+	"maghemite_openapi",
+	"dendrite_openapi",
+	"dendrite_stub",
+	"transceiver_control",
+]
+deploy_deps = [
+	"opte",
+	"softnpu_machinery"
+]
+
+install_cmd = "pfexec pkg install -v"
+# TODO: mediators
+
+[debian_like]
+build_packages = [
+      "libpq-dev",
+      "pkg-config",
+      "xmlsec1",
+      "libxmlsec1-dev",
+      "libxmlsec1-openssl",
+      "libclang-dev",
+      "libsqlite3-dev",
+]
+deploy_packages = [
+      "ca-certificates",
+      "libpq5",
+      "libsqlite3-0",
+      "libssl1.1",
+]
+build_deps = [
+	"cockroachdb",
+	"clickhouse",
+	"console",
+	"maghemite_openapi",
+	"dendrite_openapi",
+	"dendrite_stub",
+	"transceiver_control",
+]
+deploy_deps = [
+	"opte",
+	"softnpu_machinery"
+]
+install_cmd = "sudo apt-get install"
+
+
+[build_path]
+expected = [
+	"pg_config",
+	"pkg-config",
+	"cockroach",
+	"clickhouse",
+	"dpd",
+]
+
+
