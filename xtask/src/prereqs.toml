@@ -74,4 +74,14 @@ expected = [
 	"dpd",
 ]
 
+[dep.clickhouse]
+# TODO: allow lower case here
+use_case = [ "Build" ]
+# TODO: no clickhouse version file (it's a manually populated s3 bucket).
+# Does this even matter? How is it updated?
+version = "v22.8.9.24"
+source = "https://oxide-clickhouse-build.s3.us-west-2.amazonaws.com"
+check_cmd = "clickhouse server --version"
 
+[dep.clickhouse.md5]
+illumos = "7702939ce5b4b51846a1ba39f1392306"

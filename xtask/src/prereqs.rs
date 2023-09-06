@@ -11,8 +11,7 @@
 //!
 //! "Builder" machines refer to being able to build the repository, but also do
 //! things like run the tests, but it also includes running Omicron with a
-//! simulated sled agent. Generally, it is easier to support a broader array of
-//! OS targets for building, though it historically has been a pain point.
+//! simulated sled agent.
 //!
 //! "Runner" machines refer to being able to deploy a more real Omicron cluster,
 //! with a real sled agent running in the GZ. This use case is only supported on
@@ -21,18 +20,23 @@
 //!
 
 // TODO: document position on guest OS support
-// TODO: document what "running" really means
+
+use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::{clap_derive::ValueEnum, Subcommand};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, warn, Drain, Logger};
 
-/// Whether the system is intended for building Omicron, running it, or both.
-#[derive(Debug, Copy, Clone, ValueEnum)]
+/// Whether the system is intended as a Build machine, a Deploy machine, or
+/// both.
+#[derive(Debug, Copy, Clone, ValueEnum, Serialize, Deserialize)]
 pub(crate) enum UseCase {
+    // TODO: document what this means
+    // - What tests run, and on which OSes?
     Build,
+
     Deploy,
     All,
 }
@@ -109,6 +113,9 @@ struct PrereqsManifest {
     helios: PackageDef,
     build_path: PathExpectDef,
     debian_like: PackageDef,
+
+    #[serde(default, rename = "dep")]
+    deps: BTreeMap<String, DepDef>,
     //macos: PackageDef,
     //    bin: Vec<DepDef>,
 }
@@ -134,10 +141,14 @@ struct PackageDef {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DepDef {
+    use_case: Vec<UseCase>,
     version: String,
     source: String,
     check_cmd: String,
-    md5sums: Vec<(String, String)>,
+
+    // TODO: host OS here for key
+    #[serde(default, rename = "md5")]
+    md5sums: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Copy, Clone, ValueEnum)]
@@ -435,18 +446,15 @@ fn cmd_install(
     match pr_type {
         PrereqType::Pkg { names } => {
             if names.len() == 0 {
-                // TODO: better error message here?
-                bail!("no package names specified");
+                bail!("no package name(s) specified");
             }
 
             p.install(log, dry_run, names)?
         }
         PrereqType::Dep { names } => {
             if names.len() == 0 {
-                // TODO: better error message here?
-                bail!("no dependency names specified");
+                bail!("no dependency name(s) specified");
             }
-
             install_bin(log, dry_run, names)?
         }
         // TODO: real list of pkgs
@@ -455,7 +463,11 @@ fn cmd_install(
             install_bin(log, dry_run, deps)?;
         }
     }
-    info!(log,"Successfully installed all prerequisites for use case \"{:?}\"", use_case);
+    info!(
+        log,
+        "Successfully installed all prerequisites for use case \"{:?}\"",
+        use_case
+    );
 
     Ok(())
 }
@@ -463,6 +475,16 @@ fn cmd_install(
 fn install_bin(log: &Logger, dry_run: bool, names: Vec<String>) -> Result<()> {
     info!(log, "dependencies: \"{}\" installed successfully", names.join(", "));
     Ok(())
+}
+
+fn install_dep(
+    log: &Logger,
+    dry_run: bool,
+    dep: DepDef,
+    out_dir: Utf8PathBuf,
+) -> Result<()> {
+
+    todo!()
 }
 
 struct Pkg {}
