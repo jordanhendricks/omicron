@@ -482,8 +482,16 @@ fn install_dep(
     dry_run: bool,
     dep: DepDef,
     out_dir: Utf8PathBuf,
+    download_dir: Utf8PathBuf,
 ) -> Result<()> {
+    // Check for existing file with the checksum.
+    // XXX: based on host OS
+    // TODO: What happens if both exist? Will we prefer to use one or the other in the test
+    // process?
 
+    // Download the tarfile into a temporary directory.
+
+    // 
     todo!()
 }
 
