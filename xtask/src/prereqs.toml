@@ -1,5 +1,73 @@
-[helios]
-build_packages = [
+#
+# Omicron prerequisties
+#
+
+# General Configuration
+[main]
+# Output directory for dependency downloads, relative to omicron source root
+out_dir = "./out"
+# Output directory for intermediate downloads, relative to omicron source root
+downloads_dir = "./out/downloads"
+
+
+#
+# Host OS support matrix
+#
+[host_os.helios]
+supported_use_cases = [ "build", "deploy" ]
+# TODO: mediators
+pkg_install_cmd = "pfexec pkg install -v"
+
+[host_os.debian_like]
+supported_use_cases = [ "build" ]
+pkg_install_cmd = "sudo apt get install"
+
+[host_os.darwin]
+supported_use_cases = [ "build" ]
+pkg_install_cmd = "brew install"
+
+
+#
+# "Build" use case, which includes:
+# - running `cargo build`
+# - running `cargo test`
+#
+[use_case.build]
+# Binaries to check are in PATH
+expect_in_path = [
+	"pg_config",
+	"pkg-config",
+	"cockroach",
+	"clickhouse",
+	"dpd",
+]
+deps = [
+	# The test suite builds temporary databases for testing, and expects
+	# the cockroach and clickhouse binaries to exist in PATH.
+	#
+	# Also required to package cockroach and clickhouse zones
+	"cockroachdb",
+	"clickhouse",
+
+	# static bundle of console assets, required for packaging nexus
+	"console",
+
+	# required to build ddm-admin-api crate
+	"maghemite_openapi",
+
+	# required to build dpd-client crate
+	"dendrite_openapi",
+
+	# required to run tests without a real ASIC and running dendrite
+	# instance
+	"dendrite_stub",
+
+	# used as the source for xcvradm binary, which is bundled with the
+	# switch zone
+	"transceiver_control",
+]
+[use_case.build.helios]
+packages = [
 	"build-essential",
 	"build-essential",
 	"library/postgresql-13",
@@ -10,73 +78,47 @@ build_packages = [
 	# C++ header files."
 	"pkg:/ooce/developer/clang-15"
 ]
-
-# TODO: include real list, removing duplicates in software.
-deploy_packages = [
-      "brand/omicron1/tools",
-      "library/libxmlsec1"
-]
-build_deps = [
-	"cockroachdb",
-	"clickhouse",
-	"console",
-	"maghemite_openapi",
-	"dendrite_openapi",
-	"dendrite_stub",
-	"transceiver_control",
-]
-deploy_deps = [
-	"opte",
-	"softnpu_machinery"
-]
-
-install_cmd = "pfexec pkg install -v"
-# TODO: mediators
-
-[debian_like]
-build_packages = [
-      "libpq-dev",
-      "pkg-config",
-      "xmlsec1",
-      "libxmlsec1-dev",
-      "libxmlsec1-openssl",
-      "libclang-dev",
-      "libsqlite3-dev",
-]
-deploy_packages = [
-      "ca-certificates",
-      "libpq5",
-      "libsqlite3-0",
-      "libssl1.1",
-]
-build_deps = [
-	"cockroachdb",
-	"clickhouse",
-	"console",
-	"maghemite_openapi",
-	"dendrite_openapi",
-	"dendrite_stub",
-	"transceiver_control",
-]
-deploy_deps = [
-	"opte",
-	"softnpu_machinery"
-]
-install_cmd = "sudo apt-get install"
-
-
-[build_path]
-expected = [
-	"pg_config",
+[use_case.build.debian_like]
+packages = [
+	"libpq-dev",
 	"pkg-config",
-	"cockroach",
-	"clickhouse",
-	"dpd",
+	"xmlsec1",
+	"libxmlsec1-dev",
+	"libxmlsec1-openssl",
+	"libclang-dev",
+	"libsqlite3-dev",
 ]
+[use_case.build.darwin]
+packages = [
+	"coreutils",
+	"postgresql",
+	"pkg-config",
+	"libxmlsec1"
+]
+
+#
+# "Deploy" use case: running a real omicron (only supported on illumos)
+#
+[use_case.deploy]
+deps = [
+	"opte",
+	"softnpu",
+]
+[use_case.deploy.helios]
+packages = [
+	"pkg:/package/pkg",
+	"library/postgresql-13",
+	"pkg-config",
+	"brand/omicron1/tools",
+	"library/libxmlsec1"
+]
+
+
+#
+# Dependency definitions
+#
 
 [dep.clickhouse]
-# TODO: allow lower case here
-use_case = [ "Build" ]
 # TODO: no clickhouse version file (it's a manually populated s3 bucket).
 # Does this even matter? How is it updated?
 version = "v22.8.9.24"
@@ -85,3 +127,40 @@ check_cmd = "clickhouse server --version"
 
 [dep.clickhouse.md5]
 illumos = "7702939ce5b4b51846a1ba39f1392306"
+linux= "ea909519bd9d989fd5d090fd9bdd42f1"
+darwin ="20603974a929926591fca70ff1df0e45"
+
+
+[dep.cockroachdb]
+version = "v22.1.9"
+
+[dep.cockroachdb.md5]
+illumos = "d8999aff364e5d70f226e139fda724a3"
+linux = "8c3170883e0a0be1a34b44090c067a8c"
+darwin = "2db972c254b4e3b599e12110520178b5"
+
+
+[dep.console]
+artifact_dirname = "console-assets"
+source = "https://dl.oxide.computer/releases/console"
+commit = "af6536d587a17a65398407ca03d364345aa24342"
+sha2 ="00701652eb1e495fd22409dcdf74ebae2ba081529f65fb41c5ac3a2fef50a149"
+
+[dep.dendrite_openapi]
+commit = "363e365135cfa46d7f7558d8670f35aa8fe412e9"
+sha2 = "4da5edf1571a550a90aa8679a25c1535d2b02154dfb6034f170e421c2633bc31"
+base_url = "https://buildomat.eng.oxide.computer/public/file/oxidecomputer/dendrite/openapi"
+
+
+[dep.dendrite_stub]
+
+
+[dep.maghemite_openapi]
+
+
+# TODO: verify that minimum helios 
+[dep.opte]
+
+[dep.softnpu]
+
+[dep.transceiver_control]

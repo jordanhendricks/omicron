@@ -232,7 +232,7 @@ pub(crate) fn cmd_prereqs(
     cfg_file: Option<String>,
 ) -> Result<()> {
     let log = create_logger();
-    let cfg = read_prereq_toml(cfg_file.unwrap_or_else(PR_CFG_FILE.into()))?;
+    let cfg = read_prereq_toml(Utf8Path::new(&cfg_file.unwrap_or_else(|| PR_CFG_FILE.to_string())))?;
     // TODO: remove
     //info!(log, "config: {:?}", cfg);
 

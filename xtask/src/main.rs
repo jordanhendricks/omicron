@@ -36,7 +36,7 @@ enum Cmds {
         cmd: PrereqsCmd,
 
         /// Specify use case
-        #[clap(short = 'u', long, default_value = "all")]
+        #[clap(short = 'u', long, default_value = "build")]
         use_case: prereqs::UseCase,
 
         /// Override detected host OS
@@ -44,11 +44,11 @@ enum Cmds {
         host_os: Option<prereqs::HostOs>,
 
         /// Override package manager install command
-        #[clap(short = 'c', long)]
+        #[clap(short = 'i', long)]
         install_cmd: Option<String>,
 
         /// Override default TOML file
-        #[clap(short = 't', long)]
+        #[clap(short = 'c', long)]
         cfg_file: Option<String>,
     },
 }
@@ -58,7 +58,7 @@ fn main() -> Result<()> {
     match args.cmd {
         Cmds::Clippy => cmd_clippy(),
         Cmds::CheckWorkspaceDeps => cmd_check_workspace_deps(),
-        Cmds::Prereqs { cmd, host_os, install_cmd, use_case } => {
+        Cmds::Prereqs { cmd, host_os, install_cmd, use_case, cfg_file } => {
             cmd_prereqs(cmd, use_case, host_os, install_cmd, cfg_file)
         }
     }
