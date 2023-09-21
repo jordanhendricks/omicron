@@ -2,24 +2,19 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! prereqs xtask: A tool to help developers understand and manage dependencies
-//! needed for building and/or running Omicron.
+//! prereqs xtask: Manage dependencies needed for building and/or running Omicron.
 //!
 //! Currently, there are two classifications of support for developing Omicron:
 //! historically, the nomenclature here is a "builder" machine and a "runner"
 //! machine. (The same machine could be used for both.)
 //!
-//! "Builder" machines refer to being able to build the repository, but also do
-//! things like run the tests, but it also includes running Omicron with a
-//! simulated sled agent.
+//! "Builder" machines refer to being able to build the repository, but also run
+//! `cargo test` or run Omicron with a simulated sled agent.
 //!
-//! "Runner" machines refer to being able to deploy a more real Omicron cluster,
-//! with a real sled agent running in the GZ. This use case is only supported on
-//! Helios-based machines (i.e., stlouis running on oxide hardware, or helios
-//! running on commodity hardware.)
-//!
-
-// TODO: document position on guest OS support
+//! "Runner" machines refer to being able to deploy omicron with a real sled
+//! agent, running in the GZ. This use case is only supported on Helios-based
+//! machines (i.e., stlouis running on oxide hardware, or helios running on
+//! commodity hardware.)
 
 use std::collections::BTreeMap;
 
@@ -29,15 +24,28 @@ use clap::{clap_derive::ValueEnum, Subcommand};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, warn, Drain, Logger};
 
+/// Marker file used to ensure this tool can't be run on shared machines (or any
+/// other machine that one might want to protect against installing packages or
+/// binaries).
+static MARKER_FILE: &str = "/etc/opt/oxide/NO_INSTALL";
+
+static OUT_DIR: &str = "./out";
+static DOWNLOADS_DIR: &str = "./out/downloads";
+
+static PR_CFG_FILE: &str = "xtask/src/prereqs.toml";
+
+
 /// Whether the system is intended as a Build machine, a Deploy machine, or
 /// both.
 #[derive(Debug, Copy, Clone, ValueEnum, Serialize, Deserialize)]
 pub(crate) enum UseCase {
-    // TODO: document what this means
-    // - What tests run, and on which OSes?
+    /// Required for `cargo build`
     Build,
 
+    /// Required for deploying omicron (with a real sled agent)
     Deploy,
+
+    /// All use cases
     All,
 }
 
@@ -50,7 +58,7 @@ pub(crate) enum PrereqsCmd {
         json: bool,
     },
 
-    /// Installs prerequisite software
+    /// Install prerequisite software
     Install {
         /// Dry run (display what commands will be run, but don't run them)
         #[clap(short = 'n')]
@@ -95,16 +103,6 @@ pub(crate) enum PrereqType {
     /// Install all packages and dependencies
     All,
 }
-
-/// Marker file used to ensure this tool can't be run on shared machines (or any
-/// other machine that one might want to protect against installing packages or
-/// binaries).
-static MARKER_FILE: &str = "/etc/opt/oxide/NO_INSTALL";
-
-static OUT_DIR: &str = "./out";
-static DOWNLOADS_DIR: &str = "./out/downloads";
-
-static PR_CFG_FILE: &str = "xtask/src/prereqs.toml";
 
 /// Representation of the prerequisite configuration manifest.
 #[derive(Debug, Serialize, Deserialize)]
@@ -228,12 +226,13 @@ fn detect_os() -> Result<HostOs> {
 
 pub(crate) fn cmd_prereqs(
     cmd: PrereqsCmd,
+    use_case: UseCase,
     host_os: Option<HostOs>,
     install_cmd: Option<String>,
-    use_case: UseCase,
+    cfg_file: Option<String>,
 ) -> Result<()> {
     let log = create_logger();
-    let cfg = read_prereq_toml(PR_CFG_FILE.into())?;
+    let cfg = read_prereq_toml(cfg_file.unwrap_or_else(PR_CFG_FILE.into()))?;
     // TODO: remove
     //info!(log, "config: {:?}", cfg);
 
