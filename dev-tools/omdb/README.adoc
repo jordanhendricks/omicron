@@ -1,0 +1,7 @@
+:showtitle:
+:toc: left
+:icons: font
+
+
+= omdb: The Omicron debugger
+
