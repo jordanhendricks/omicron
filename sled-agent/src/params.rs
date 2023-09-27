@@ -868,6 +868,11 @@ pub struct TimeSync {
     pub correction: f64,
 }
 
+// TODO
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
+pub struct StatusTree {
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SledRole {

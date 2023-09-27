@@ -15,7 +15,7 @@ use crate::params::{
     DiskStateRequested, InstanceHardware, InstanceMigrationSourceParams,
     InstancePutStateResponse, InstanceStateRequested,
     InstanceUnregisterResponse, ServiceEnsureBody, SledRole, TimeSync,
-    VpcFirewallRule, ZoneBundleMetadata, Zpool,
+    VpcFirewallRule, ZoneBundleMetadata, Zpool, StatusTree,
 };
 use crate::services::{self, ServiceManager};
 use crate::storage_manager::{self, StorageManager};
@@ -192,6 +192,9 @@ struct SledAgentInner {
     // ID of the Sled
     id: Uuid,
 
+    /// Tracks the status of what sled agent is doing
+    status: StatusTree,
+
     // Subnet of the Sled's underlay.
     //
     // The Sled Agent's address can be derived from this value.
@@ -266,7 +269,8 @@ impl SledAgent {
         ));
         info!(&log, "SledAgent::new(..) starting");
 
-        // Configure a swap device of the configured size before other system setup.
+        // Configure a swap device of the configured size, before other system
+        // setup.
         match config.swap_device_size_gb {
             Some(sz) if sz > 0 => {
                 info!(log, "Requested swap device of size {} GiB", sz);
@@ -887,7 +891,7 @@ impl SledAgent {
     }
 
     /// Gets the sled's current time synchronization state
-    pub async fn timesync_get(&self) -> Result<TimeSync, Error> {
+    pub async fn status_tree(&self) -> Result<StatusTree, Error> {
         self.inner.services.timesync_get().await.map_err(Error::from)
     }
 }

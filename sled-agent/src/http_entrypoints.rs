@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-//! HTTP entrypoint functions for the sled agent's exposed API
+//! HTTP entrypoint functions for the sled agent's API
 
 use super::sled_agent::SledAgent;
 use crate::params::{
@@ -619,4 +619,15 @@ async fn timesync_get(
 ) -> Result<HttpResponseOk<TimeSync>, HttpError> {
     let sa = rqctx.context();
     Ok(HttpResponseOk(sa.timesync_get().await.map_err(|e| Error::from(e))?))
+}
+
+#[endpoint {
+    method = GET,
+    path = "/status",
+}]
+async fn timesync_get(
+    rqctx: RequestContext<SledAgent>,
+) -> Result<HttpResponseOk<StatusTree>, HttpError> {
+    let sa = rqctx.context();
+    Ok(HttpResponseOk(sa.status_tree().await.map_err(|e| Error::from(e))?))
 }

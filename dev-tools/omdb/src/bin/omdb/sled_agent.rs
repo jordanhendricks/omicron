@@ -31,6 +31,9 @@ enum SledAgentCommands {
     /// print information about zpools
     #[clap(subcommand)]
     Zpools(ZpoolCommands),
+
+    /// print status tree
+    Status,
 }
 
 #[derive(Debug, Subcommand)]
@@ -70,6 +73,9 @@ impl SledAgentArgs {
             SledAgentCommands::Zpools(ZpoolCommands::List) => {
                 cmd_zpools_list(&client).await
             }
+            SledAgentCommands::Status => {
+                cmd_status(&client).await
+            }
         }
     }
 }
@@ -108,5 +114,13 @@ async fn cmd_zpools_list(
         println!("    {:?}", zpool);
     }
 
+    Ok(())
+}
+
+/// Runs `omdb sled-agent status`
+async fn cmd_status(
+    client: &sled_agent_client::Client,
+) -> Result<(), anyhow::Error> {
+    todo!()
     Ok(())
 }
